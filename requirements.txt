@@ -1,0 +1,4 @@
+cocos2d==0.6.4
+Pillow==3.3.1
+pyglet==1.2.4
+six==1.10.0
