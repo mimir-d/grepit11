@@ -2,7 +2,7 @@
 import random
 import math
 import os
-import importlib
+import time
 from collections import defaultdict
 
 from PIL import Image, ImageDraw, ImageFont
@@ -21,9 +21,10 @@ from cocos.director import director
 from Box2D import (b2, b2Vec2)
 
 
-class Event:
+class EventOnce:
     '''
     Event object that can call multiple observer functions with arbitrary args
+    EventOnce acts as a trigger, only broadcasts the data once
     '''
     def __init__(self):
         self.__observers = []
@@ -39,77 +40,58 @@ class Event:
     def __call__(self, *args, **kwargs):
         for o in self.__observers:
             o(*args, **kwargs)
+        del self.__observers[:]
 
 
-class BotSpriteEntity(Sprite):
-    '''
-    The player controlled bot
-    '''
-    def __init__(self, size, color):
-        super(BotEntity, self).__init__(self.__create_image(size, color))
-
-    def __create_image(self, size, color):
-        im = Image.new('RGBA', (size, size), (255, 255, 255, 0))
-        draw = ImageDraw.Draw(im)
-        draw.ellipse((1, 1, im.size[0]-1, im.size[1]-1), fill=color)
-
-        return ImageData(*im.size, 'RGBA', im.tobytes(), pitch=-im.size[0]*4)
-
-
-class Mechanics:
-    '''
-    Game mechanics object
-    Deals with physics
-    '''
-    PX_PER_METER = 20.0
-
-    def __init__(self):
-        # todo: contact listener for end game
-        self.__world = b2.world(gravity=(0, -10), doSleep=True)
-
-        self.__entities = []
-        self.target_reached = Event()
-
-    def add_entity(self, entity):
-        # init mechanics for given entity
-        self.__init_entity(entity)
-
-
-        # append to known entities
-        self.__entities.append(entity)
-
-    def update(self, dt):
-        self.__world.Step(1.0 / 60, 10, 10)
-
-    def __init_entity(self, entity):
-        entity.init_phys(self.__world)
-
-
-class Entity(CocosNode):
-    def __init__(self):
-        super().__init__()
+class EntityPhysMixin:
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._body = None
 
-    def draw(self):
+
+class Entity(EntityPhysMixin, CocosNode):
+    '''
+    Game entity that renders as a filled polygon
+    '''
+    def draw_poly(self, color):
         for fixture in self._body.fixtures:
             verts = [(self._body.transform * v) * Mechanics.PX_PER_METER for v in fixture.shape.vertices]
-            # import pdb; pdb.set_trace()
 
             vert_buf = []
             color_buf = []
             for v in verts:
                 vert_buf.extend([v.x, v.y])
-                color_buf.extend([255, 0, 0])
+                color_buf.extend(color)
 
-            graphics.draw(len(vert_buf) // 2, gl.GL_POLYGON, ('v2f', vert_buf), ('c3B', color_buf))
+            graphics.draw(len(vert_buf) // 2, gl.GL_POLYGON, ('v2f', vert_buf), ('c4B', color_buf))
+
+
+class SpriteEntity(EntityPhysMixin, Sprite):
+    '''
+    Game entity that renders as a sprite circle
+    '''
+    def __init__(self, size, color):
+        super().__init__(self.__create_image(size, color))
+        self.__size = size
+
+    def __create_image(self, size, color):
+        im = Image.new('RGBA', (int(size), int(size)), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(im)
+        draw.ellipse((1, 1, im.size[0]-1, im.size[1]-1), fill=color)
+
+        return ImageData(*im.size, 'RGBA', im.tobytes(), pitch=-im.size[0]*4)
+
+    def draw(self):
+        x = self._body.worldCenter.x * Mechanics.PX_PER_METER
+        y = self._body.worldCenter.y * Mechanics.PX_PER_METER
+        self.position = (x, y)
+
+        super().draw()
 
 
 class LabyrinthBounds(Entity):
     def init_phys(self, world):
-        x0 = 10 / Mechanics.PX_PER_METER
-        y0 = 10 / Mechanics.PX_PER_METER
-        x1 = (Main.WIDTH - 10) / Mechanics.PX_PER_METER
-        y1 = (Main.HEIGHT - 10) / Mechanics.PX_PER_METER
+        [x0, y0, x1, y1] = Mechanics.getBounds()
 
         self._body = world.CreateStaticBody(
             position=(0, 0),
@@ -132,18 +114,82 @@ class LabyrinthBounds(Entity):
             verts = [(self._body.transform * v) * Mechanics.PX_PER_METER for v in fixture.shape.vertices]
             for v in verts:
                 vert_buf.extend([v.x, v.y])
-                color_buf.extend([0, 0, 0])
+                color_buf.extend([0, 0, 0, 255])
 
-        print(vert_buf)
-        graphics.draw(len(vert_buf) // 2, gl.GL_LINES, ('v2f', vert_buf), ('c3B', color_buf))
+        graphics.draw(len(vert_buf) // 2, gl.GL_LINES, ('v2f', vert_buf), ('c4B', color_buf))
 
 
-class Ball(Entity):
+class Bot(SpriteEntity):
+    __SIZE = 1
+
+    def __init__(self):
+        super().__init__(self.__SIZE * Mechanics.PX_PER_METER * 2, (255, 0, 0, 255))
+
     def init_phys(self, world):
         self._body = world.CreateDynamicBody(
-            position=(10, 15), angle=15
+            position=(10, 15),
+            userData=Mechanics.ENDGAME_TAG
         )
-        self._body.CreatePolygonFixture(box=(1, 1), density=1, friction=0.3)
+        self._body.CreateCircleFixture(radius=self.__SIZE, density=1, friction=0.3)
+
+
+class LandingZone(Entity):
+    '''
+    The target object where the bot needs to arrive
+    '''
+    def init_phys(self, world):
+        [x0, y0, x1, y1] = Mechanics.getBounds()
+
+        self._body = world.CreateStaticBody(
+            position=(x1 - 2, y1 - 2),
+            shapes=b2.polygonShape(box=(2, 2)),
+            userData=Mechanics.ENDGAME_TAG
+        )
+
+    def draw(self):
+        self.draw_poly([0, 255, 0, 100])
+
+
+class Mechanics:
+    '''
+    Game mechanics object
+    Deals with physics
+    '''
+    PX_PER_METER = 20.0
+    ENDGAME_TAG = 'endgame'
+
+    def __init__(self):
+        # todo: contact listener for end game
+        self.__world = b2.world(gravity=(0, -10), doSleep=True)
+
+        self.target_reached = EventOnce()
+
+    def add_entity(self, entity):
+        # init mechanics for given entity
+        self.__init_entity(entity)
+
+    def update(self, dt):
+        self.__world.Step(1.0 / 60, 10, 10)
+
+        # check contacts for endgame
+        for c in self.__world.contacts:
+            d1 = c.fixtureA.body.userData
+            d2 = c.fixtureB.body.userData
+            if d1 == d2:
+                self.target_reached()
+                break
+
+    def __init_entity(self, entity):
+        entity.init_phys(self.__world)
+
+    @staticmethod
+    def getBounds():
+        x0 = 10 / Mechanics.PX_PER_METER
+        y0 = 10 / Mechanics.PX_PER_METER
+        x1 = (Main.WIDTH - 10) / Mechanics.PX_PER_METER
+        y1 = (Main.HEIGHT - 10) / Mechanics.PX_PER_METER
+        return [x0, y0, x1, y1]
+
 
 # full of goddamn hacks because i have to write this with no sleep
 keys = set()
@@ -170,20 +216,28 @@ class Main(ColorLayer):
 
         # self.__init_players()
         self.add(LabyrinthBounds())
-        ball = Ball()
-        self.add(ball)
+        self.__bot = Bot()
+        self.add(self.__bot)
 
-        ball.do(MoveAI())
+        self.__bot.do(MoveAI())
 
+        self.add(LandingZone())
+
+        self.__start_time = time.time()
         self.schedule(self.__mechanics.update)
 
     def __on_target_reached(self):
-        print('total time was')
+        self.__bot.remove_action(self.__bot.actions[0])
+
+        total = time.time() - self.__start_time
+        print('total time was {} seconds'.format(total))
+
 
     def add(self, obj, *args, **kwargs):
         ''' Override add() that adds physical objects as well '''
         super(Main, self).add(obj, *args, **kwargs)
         self.__mechanics.add_entity(obj)
+
 
 class MoveAI(act.Move):
     def step(self, dt):
