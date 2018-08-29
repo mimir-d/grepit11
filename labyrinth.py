@@ -148,12 +148,35 @@ class Labyrinth(Entity):
     def init_phys(self, world):
         [x0, y0, x1, y1] = Mechanics.getBounds()
 
-        # simple demo one
         self._body = world.CreateStaticBody(
             position=(0, 0),
             shapes=[
-                b2.edgeShape(vertices=[(x1/2, y0 + 4), (x1/2, y1)]),
-                b2.edgeShape(vertices=[(x1/2 + 4, y1/2), (x1, y1/2)])
+                # simple demo one
+                # b2.edgeShape(vertices=[(x1/2, y0 + 4), (x1/2, y1)]),
+                # b2.edgeShape(vertices=[(x1/2 + 4, y1/2), (x1, y1/2)])
+
+                b2.edgeShape(vertices=[(x0 + 4, y1/2 + 2), (x1/2, y1)]),
+
+                b2.edgeShape(vertices=[(x0, y1/3), (x1/3, y1/3)]),
+                b2.edgeShape(vertices=[(x1/3, y1/3), (x1/3, y1/3 - 4)]),
+                b2.edgeShape(vertices=[(x1/3, y1/3), (x1/3, y1/3 + 4)]),
+
+                b2.edgeShape(vertices=[(x1/2, y0), (x1/2, y0 + 6)]),
+                b2.edgeShape(vertices=[(x1/2, y0 + 6), (x1 * 0.75, y0 + 4)]),
+                b2.edgeShape(vertices=[(x1 * 0.75, y0 + 4), (x1 * 0.75, y1/2)]),
+
+                b2.edgeShape(vertices=[(x1/2, y1 * 0.75 + 1.5), (x1/2, y1)]),
+
+                b2.edgeShape(vertices=[(x1/2, y1 * 0.75), (x1/2 + 2, y1 * 0.75)]),
+                b2.edgeShape(vertices=[(x1/2 + 2, y1 * 0.75), (x1/2 + 2, y1/3)]),
+                b2.edgeShape(vertices=[(x1/2, y1/3), (x1/2 + 2, y1/3)]),
+                b2.edgeShape(vertices=[(x1/2, y1 * 0.75), (x1/2, y1/3)]),
+
+                b2.edgeShape(vertices=[(x1/2 + 2, y1 * 0.75), (x1 - 6, y1 * 0.65)]),
+
+                b2.edgeShape(vertices=[(x1, y1), (x1 - 3.5, y1 * 0.65)]),
+
+                b2.edgeShape(vertices=[(x1, y1/2), (x1 - 3.5, y0 + 4)])
             ],
             userData=Mechanics.WALL_TAG
         )
@@ -181,11 +204,13 @@ class LandingZone(Entity):
     '''
     The target object where the bot needs to arrive
     '''
-    def init_phys(self, world):
-        [x0, y0, x1, y1] = Mechanics.getBounds()
+    def __init__(self, position):
+        super().__init__()
+        self.__initial_pos = position
 
+    def init_phys(self, world):
         self._body = world.CreateStaticBody(
-            position=(x1 - 2, y1 - 2),
+            position=self.__initial_pos,
             shapes=b2.polygonShape(box=(2, 2)),
             userData=Mechanics.ENDGAME_TAG
         )
@@ -314,7 +339,7 @@ class Main(ColorLayer):
         except:
             raise RuntimeError('Cannot load AI module. Inner error: ', traceback.format_exc())
 
-        self.__bot = Bot(position=(7, 24))
+        self.__bot = Bot(position=(8, 25))
         action = MoveAction(mod.Bot(), self.__mechanics)
         self.__bot.do(action)
         self.add(self.__bot)
@@ -328,7 +353,8 @@ class Main(ColorLayer):
         self.add(Labyrinth())
 
     def __add_landing(self):
-        self.add(LandingZone())
+        [x0, y0, x1, y1] = Mechanics.getBounds()
+        self.add(LandingZone(position=(x1/2 + 6, y1 - 2)))
 
     def add(self, obj, *args, **kwargs):
         ''' Override add() that adds physical objects as well '''
