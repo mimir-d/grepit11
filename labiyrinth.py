@@ -1,8 +1,10 @@
 
 import random
 import math
-import os
+import os, sys
 import time
+import importlib
+import traceback
 from collections import defaultdict
 
 from PIL import Image, ImageDraw, ImageFont
@@ -101,6 +103,25 @@ class SpriteEntity(EntityPhysMixin, Sprite):
         super().draw()
 
 
+class Hitmap(CocosNode):
+    def __init__(self, width, height):
+        super().__init__()
+        self.__image = Image.new('RGBA', (width, height), (255, 255, 255, 0))
+
+    def draw_hit(self, x, y):
+        draw = ImageDraw.Draw(self.__image)
+        y = self.__image.size[1] - y
+        draw.ellipse((x-2, y-2, x+2, y+2), fill=(255, 0, 255, 255))
+
+    def draw(self):
+        data = ImageData(
+            *self.__image.size,
+            'RGBA', self.__image.tobytes(),
+            pitch=-self.__image.size[0]*4
+        )
+        data.blit(0, 0)
+
+
 class LabyrinthBounds(Entity):
     def init_phys(self, world):
         [x0, y0, x1, y1] = Mechanics.getBounds()
@@ -115,7 +136,8 @@ class LabyrinthBounds(Entity):
                 # left, right
                 b2.edgeShape(vertices=[(x0, y0), (x0, y1)]),
                 b2.edgeShape(vertices=[(x1, y0), (x1, y1)]),
-            ]
+            ],
+            userData=Mechanics.WALL_TAG
         )
 
     def draw(self):
@@ -132,7 +154,8 @@ class Labyrinth(Entity):
             shapes=[
                 b2.edgeShape(vertices=[(x1/2, y0 + 4), (x1/2, y1)]),
                 b2.edgeShape(vertices=[(x1/2 + 4, y1/2), (x1, y1/2)])
-            ]
+            ],
+            userData=Mechanics.WALL_TAG
         )
 
     def draw(self):
@@ -142,12 +165,13 @@ class Labyrinth(Entity):
 class Bot(SpriteEntity):
     __SIZE = 1
 
-    def __init__(self):
+    def __init__(self, position):
         super().__init__(self.__SIZE * Mechanics.PX_PER_METER * 2, (255, 0, 0, 255))
+        self.__initial_pos = position
 
     def init_phys(self, world):
         self._body = world.CreateDynamicBody(
-            position=(10, 15),
+            position=self.__initial_pos,
             userData=Mechanics.ENDGAME_TAG
         )
         self._body.CreateCircleFixture(radius=self.__SIZE, density=1, friction=0.3)
@@ -170,6 +194,27 @@ class LandingZone(Entity):
         self.draw_poly([0, 255, 0, 100])
 
 
+class RaycastInterceptor(b2.rayCastCallback):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.__type = None
+        self.__point = None
+
+    def ReportFixture(self, fixture, point, normal, fraction):
+        self.__type = fixture.body.userData
+        self.__point = point
+        # stop at closest point
+        return fraction
+
+    @property
+    def type(self):
+        return self.__type
+
+    @property
+    def point(self):
+        return self.__point
+
+
 class Mechanics:
     '''
     Game mechanics object
@@ -177,10 +222,13 @@ class Mechanics:
     '''
     PX_PER_METER = 20.0
     ENDGAME_TAG = 'endgame'
+    WALL_TAG = 'wall'
+    TARGET_TAG = 'target'
 
     def __init__(self):
         # todo: contact listener for end game
         self.__world = b2.world(gravity=(0, 0), doSleep=True)
+        self.__hitmap = None
 
         self.target_reached = EventOnce()
 
@@ -199,7 +247,29 @@ class Mechanics:
                 self.target_reached()
                 break
 
+    def raycast(self, src, dst):
+        ri = RaycastInterceptor()
+        self.__world.RayCast(ri, src, dst)
+
+        # draw on hitmap
+        if self.__hitmap is not None:
+            x = ri.point[0] * Mechanics.PX_PER_METER
+            y = ri.point[1] * Mechanics.PX_PER_METER
+            self.__hitmap.draw_hit(x, y)
+
+        # TODO:
+        # vert_buf = [float(x) for x in [src[0], src[1], ri.point[0], ri.point[1]]]
+        # color_buf = [255, 0, 0, 0, 0, 255]
+        # graphics.draw(len(vert_buf) // 2, gl.GL_LINES, ('v2f', vert_buf), ('c3B', color_buf))
+
+        return ri.type, ri.point
+
     def __init_entity(self, entity):
+        if type(entity) == Hitmap:
+            # special case, save it for casts
+            self.__hitmap = entity
+            return
+
         entity.init_phys(self.__world)
 
     @staticmethod
@@ -211,22 +281,9 @@ class Mechanics:
         return [x0, y0, x1, y1]
 
 
-# full of goddamn hacks because i have to write this with no sleep
-keys = set()
-
 class Main(ColorLayer):
     WIDTH = 600
     HEIGHT = 600
-
-    is_event_handler = True
-
-    def on_key_press(self, key, mods):
-        global keys
-        keys.add(key)
-
-    def on_key_release(self, key, mods):
-        global keys
-        keys.remove(key)
 
     def __init__(self):
         super(Main, self).__init__(52, 152, 219, 255)
@@ -234,15 +291,10 @@ class Main(ColorLayer):
         self.__mechanics = Mechanics()
         self.__mechanics.target_reached += self.__on_target_reached
 
-        self.add(LabyrinthBounds())
-        self.add(Labyrinth())
-
-        self.__bot = Bot()
-        self.add(self.__bot)
-
-        self.__bot.do(MoveAI())
-
-        self.add(LandingZone())
+        self.__add_labyrinth()
+        self.__add_landing()
+        self.__add_hitmap()
+        self.__add_bot()
 
         self.__start_time = time.time()
         self.schedule(self.__mechanics.update)
@@ -253,6 +305,27 @@ class Main(ColorLayer):
         total = time.time() - self.__start_time
         print('total time was {} seconds'.format(total))
 
+    def __add_bot(self):
+        try:
+            mod = importlib.import_module('players.{}'.format(sys.argv[1]))
+        except:
+            raise RuntimeError('Cannot load AI module')
+
+        self.__bot = Bot(position=(7, 24))
+        action = MoveAction(mod.Bot(), self.__mechanics)
+        self.__bot.do(action)
+        self.add(self.__bot)
+
+    def __add_hitmap(self):
+        self.__hitmap = Hitmap(self.WIDTH, self.HEIGHT)
+        self.add(self.__hitmap, z=1)
+
+    def __add_labyrinth(self):
+        self.add(LabyrinthBounds())
+        self.add(Labyrinth())
+
+    def __add_landing(self):
+        self.add(LandingZone())
 
     def add(self, obj, *args, **kwargs):
         ''' Override add() that adds physical objects as well '''
@@ -260,27 +333,51 @@ class Main(ColorLayer):
         self.__mechanics.add_entity(obj)
 
 
-class MoveAI(act.Move):
+class MoveAction(act.Move):
+    def __init__(self, ai, mechanics):
+        super().__init__()
+        self.__ai = ai
+        self.__mechanics = mechanics
+
     def step(self, dt):
-        global keys
-        dx = 0
-        dy = 0
-        if 65361 in keys:
-            # left
-            dx = -1
-        if 65363 in keys:
-            # right
-            dx = 1
-        if 65362 in keys:
-            # up
-            dy = 1
-        if 65364 in keys:
-            # down
-            dy = -1
+        try:
+            dx, dy = self.__ai.update(self.__raycast)
+        except Exception as e:
+            # any exception in user script results in a null movement vector
+            print('{} threw exception: {}'.format(self.target, traceback.format_exc()))
+            dx, dy = 0, 0
+
+        # act on the body with the input
         b = self.target._body
         b.ApplyLinearImpulse(b2Vec2(dx, dy) * b.mass, b.worldCenter, wake=True)
 
+    def __raycast(self, dx, dy):
+        px = self.target._body.position.x
+        py = self.target._body.position.y
+
+        # make a distant point
+        magi = 1.0 / ((dx*dx + dy*dy) ** 0.5)
+        x = px + dx * magi * 99
+        y = py + dy * magi * 99
+        return self.__mechanics.raycast(src=(px, py), dst=(x, y))
+
+    def __deepcopy__(self, memo):
+        # the cocos framework does a deepcopy on the action and we need refs, so skip that
+        return self
+
+
+class BotAI:
+    def update(self, cast_laser):
+        '''
+        Returns a movement vector
+        '''
+        raise NotImplementedError('overwrite this')
+
 
 if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        print('Invalid num of args; syntax <program> <ai module name>')
+        exit(1)
+
     director.init(width=Main.WIDTH, height=Main.HEIGHT, autoscale=True, resizable=True)
     director.run(cocos.scene.Scene(Main()))
