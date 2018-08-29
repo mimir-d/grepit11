@@ -51,8 +51,20 @@ class EntityPhysMixin:
 
 class Entity(EntityPhysMixin, CocosNode):
     '''
-    Game entity that renders as a filled polygon
+    Game entity that renders as primitives
     '''
+    def draw_lines(self, color):
+        vert_buf = []
+        color_buf = []
+
+        for fixture in self._body.fixtures:
+            verts = [(self._body.transform * v) * Mechanics.PX_PER_METER for v in fixture.shape.vertices]
+            for v in verts:
+                vert_buf.extend([v.x, v.y])
+                color_buf.extend(color)
+
+        graphics.draw(len(vert_buf) // 2, gl.GL_LINES, ('v2f', vert_buf), ('c4B', color_buf))
+
     def draw_poly(self, color):
         for fixture in self._body.fixtures:
             verts = [(self._body.transform * v) * Mechanics.PX_PER_METER for v in fixture.shape.vertices]
@@ -107,16 +119,24 @@ class LabyrinthBounds(Entity):
         )
 
     def draw(self):
-        vert_buf = []
-        color_buf = []
+        self.draw_lines([0, 0, 0, 255])
 
-        for fixture in self._body.fixtures:
-            verts = [(self._body.transform * v) * Mechanics.PX_PER_METER for v in fixture.shape.vertices]
-            for v in verts:
-                vert_buf.extend([v.x, v.y])
-                color_buf.extend([0, 0, 0, 255])
 
-        graphics.draw(len(vert_buf) // 2, gl.GL_LINES, ('v2f', vert_buf), ('c4B', color_buf))
+class Labyrinth(Entity):
+    def init_phys(self, world):
+        [x0, y0, x1, y1] = Mechanics.getBounds()
+
+        # simple demo one
+        self._body = world.CreateStaticBody(
+            position=(0, 0),
+            shapes=[
+                b2.edgeShape(vertices=[(x1/2, y0 + 4), (x1/2, y1)]),
+                b2.edgeShape(vertices=[(x1/2 + 4, y1/2), (x1, y1/2)])
+            ]
+        )
+
+    def draw(self):
+        self.draw_lines([0, 0, 0, 255])
 
 
 class Bot(SpriteEntity):
@@ -160,7 +180,7 @@ class Mechanics:
 
     def __init__(self):
         # todo: contact listener for end game
-        self.__world = b2.world(gravity=(0, -10), doSleep=True)
+        self.__world = b2.world(gravity=(0, 0), doSleep=True)
 
         self.target_reached = EventOnce()
 
@@ -214,8 +234,9 @@ class Main(ColorLayer):
         self.__mechanics = Mechanics()
         self.__mechanics.target_reached += self.__on_target_reached
 
-        # self.__init_players()
         self.add(LabyrinthBounds())
+        self.add(Labyrinth())
+
         self.__bot = Bot()
         self.add(self.__bot)
 
