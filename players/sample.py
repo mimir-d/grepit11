@@ -1,5 +1,5 @@
 
-from labiyrinth import BotAI
+from labyrinth import BotAI
 
 class Bot(BotAI):
     def update(self, cast_laser):
