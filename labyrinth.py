@@ -312,7 +312,7 @@ class Main(ColorLayer):
         try:
             mod = importlib.import_module('players.{}'.format(sys.argv[1]))
         except:
-            raise RuntimeError('Cannot load AI module')
+            raise RuntimeError('Cannot load AI module. Inner error: ', traceback.format_exc())
 
         self.__bot = Bot(position=(7, 24))
         action = MoveAction(mod.Bot(), self.__mechanics)
