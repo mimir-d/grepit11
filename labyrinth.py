@@ -350,8 +350,10 @@ class MoveAction(act.Move):
             print('{} threw exception: {}'.format(self.target, traceback.format_exc()))
             dx, dy = 0, 0
 
-        # act on the body with the input
+        # act on the body with the input, linear motion
         b = self.target._body
+        dx -= b.linearVelocity[0]
+        dy -= b.linearVelocity[1]
         b.ApplyLinearImpulse(b2Vec2(dx, dy) * b.mass, b.worldCenter, wake=True)
 
     def __raycast(self, dx, dy):
