@@ -261,9 +261,9 @@ class Mechanics:
         # vert_buf = [float(x) for x in [src[0], src[1], ri.point[0], ri.point[1]]]
         # color_buf = [255, 0, 0, 0, 0, 255]
         # graphics.draw(len(vert_buf) // 2, gl.GL_LINES, ('v2f', vert_buf), ('c3B', color_buf))
-        x = ri.point[0]
-        y = ri.point[1]
-        mag = (x*x + y*y) ** 0.5
+        dx = ri.point[0] - src[0]
+        dy = ri.point[1] - src[1]
+        mag = (dx*dx + dy*dy) ** 0.5
 
         return ri.type, mag
 
