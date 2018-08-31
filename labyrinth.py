@@ -12,7 +12,7 @@ from pyglet import (graphics, gl)
 from pyglet.image import ImageData
 
 import cocos
-from cocos.cocosnode import CocosNode
+from cocos.batch import BatchableNode
 import cocos.actions as act
 import cocos.euclid as eu
 from cocos.layer import Layer, ColorLayer
@@ -45,88 +45,163 @@ class EventOnce:
         del self.__observers[:]
 
 
-class EntityPhysMixin:
+class EntityPhysicsMixin:
+    '''
+    Mixin that specifies that the entity is physical
+    '''
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._body = None
+        self.physics_body = None
+
+    def init_physics(self, world):
+        '''
+        Initialize the physics for this entity. Must be implemented
+        '''
+        raise NotImplementedError('mandatory')
 
 
-class Entity(EntityPhysMixin, CocosNode):
+class _EntityNode(BatchableNode):
+    '''
+    CocosNode used as an aggregate in Entity object.
+    Restricts the interface presented to inheritants of Entity
+    '''
+    def __init__(self, entity):
+        super().__init__()
+        self.__owner = entity
+
+    def draw(self):
+        self.__owner.render()
+
+
+class Entity:
+    '''
+    Basically an interface for the entity, must implement render, update optional.
+    '''
+    def __init__(self, node = None):
+        self.__node = node or _EntityNode(self)
+        self.__node.owner = self
+
+    def render(self):
+        '''
+        Called each frame for entity rendering
+        '''
+        raise NotImplementedError('mandatory')
+
+    def update(self):
+        '''
+        Called each frame for any entity updates.
+        Intended to be overwritten
+        '''
+        pass
+
+    @property
+    def cocos_node(self):
+        return self.__node
+
+
+class PrimitiveEntity(EntityPhysicsMixin, Entity):
     '''
     Game entity that renders as primitives
     '''
-    def draw_lines(self, color):
+    PRIMITIVE_LINES = 0
+    PRIMITIVE_POLY = 1
+
+    def __init__(self, primitive_type, color):
+        super().__init__()
+        self.__primitive_type = primitive_type
+        self.__color = color
+
+    def __draw_lines(self):
         vert_buf = []
         color_buf = []
 
-        for fixture in self._body.fixtures:
-            verts = [(self._body.transform * v) * Mechanics.PX_PER_METER for v in fixture.shape.vertices]
+        # get a list of disjoint lines and draw them separately with width 1px
+        # doesnt matter which fixture contains the lines, all are drawn
+        for fixture in self.physics_body.fixtures:
+            verts = [(self.physics_body.transform * v) * Mechanics.PX_PER_METER for v in fixture.shape.vertices]
             for v in verts:
                 vert_buf.extend([v.x, v.y])
-                color_buf.extend(color)
+                color_buf.extend(self.__color)
 
         graphics.draw(len(vert_buf) // 2, gl.GL_LINES, ('v2f', vert_buf), ('c4B', color_buf))
 
-    def draw_poly(self, color):
-        for fixture in self._body.fixtures:
-            verts = [(self._body.transform * v) * Mechanics.PX_PER_METER for v in fixture.shape.vertices]
+    def __draw_poly(self):
+        for fixture in self.physics_body.fixtures:
+            # get a list of vertices from the physical fixture and draw them as a filled poly
+            verts = [(self.physics_body.transform * v) * Mechanics.PX_PER_METER for v in fixture.shape.vertices]
 
             vert_buf = []
             color_buf = []
             for v in verts:
                 vert_buf.extend([v.x, v.y])
-                color_buf.extend(color)
+                color_buf.extend(self.__color)
 
             graphics.draw(len(vert_buf) // 2, gl.GL_POLYGON, ('v2f', vert_buf), ('c4B', color_buf))
 
+    def render(self):
+        if self.__primitive_type == self.PRIMITIVE_LINES:
+            return self.__draw_lines()
+        elif self.__primitive_type == self.PRIMITIVE_POLY:
+            return self.__draw_poly()
 
-class SpriteEntity(EntityPhysMixin, Sprite):
+        # else return nothing and draw nothing
+
+
+class SpriteEntity(EntityPhysicsMixin, Entity):
     '''
-    Game entity that renders as a sprite circle
+    Game entity that renders as a circle sprite
     '''
     def __init__(self, size, color):
-        super().__init__(self.__create_image(size, color))
-        self.__size = size
+        self.__node = self.__create_cocos_node(size, color)
+        super().__init__(self.__node)
 
-    def __create_image(self, size, color):
+    def update(self):
+        self.__node.position = (
+            self.physics_body.worldCenter.x * Mechanics.PX_PER_METER,
+            self.physics_body.worldCenter.y * Mechanics.PX_PER_METER
+        )
+
+    def __create_cocos_node(self, size, color):
         im = Image.new('RGBA', (int(size), int(size)), (255, 255, 255, 0))
         draw = ImageDraw.Draw(im)
         draw.ellipse((1, 1, im.size[0]-1, im.size[1]-1), fill=color)
 
-        return ImageData(*im.size, 'RGBA', im.tobytes(), pitch=-im.size[0]*4)
-
-    def draw(self):
-        x = self._body.worldCenter.x * Mechanics.PX_PER_METER
-        y = self._body.worldCenter.y * Mechanics.PX_PER_METER
-        self.position = (x, y)
-
-        super().draw()
+        data = ImageData(*im.size, 'RGBA', im.tobytes(), pitch=-im.size[0]*4)
+        return Sprite(data)
 
 
-class Hitmap(CocosNode):
+class Hitmap(Entity):
+    '''
+    Game entity that renders as a transparent overlay in order to show the laser hits.
+    '''
     def __init__(self, width, height):
         super().__init__()
         self.__image = Image.new('RGBA', (width, height), (255, 255, 255, 0))
+        self.__draw = ImageDraw.Draw(self.__image)
 
     def draw_hit(self, x, y):
-        draw = ImageDraw.Draw(self.__image)
+        '''
+        Draw a hitpoint on the specified coords
+        '''
         y = self.__image.size[1] - y
-        draw.ellipse((x-2, y-2, x+2, y+2), fill=(255, 0, 255, 255))
+        self.__draw.ellipse((x-2, y-2, x+2, y+2), fill=(255, 0, 255, 255))
 
-    def draw(self):
-        data = ImageData(
-            *self.__image.size,
-            'RGBA', self.__image.tobytes(),
-            pitch=-self.__image.size[0]*4
-        )
+    def render(self):
+        data = ImageData(*self.__image.size, 'RGBA', self.__image.tobytes(), pitch=-self.__image.size[0]*4)
         data.blit(0, 0)
 
 
-class LabyrinthBounds(Entity):
-    def init_phys(self, world):
-        [x0, y0, x1, y1] = Mechanics.getBounds()
+class LabyrinthBounds(PrimitiveEntity):
+    '''
+    Game entity for the playpen walls
+    '''
+    def __init__(self):
+        super().__init__(PrimitiveEntity.PRIMITIVE_LINES, color=(0, 0, 0, 255))
 
-        self._body = world.CreateStaticBody(
+    def init_physics(self, world):
+        [x0, y0, x1, y1] = Mechanics.BOUNDS
+
+        self.physics_body = world.CreateStaticBody(
             position=(0, 0),
             shapes=[
                 # bottom, top
@@ -140,15 +215,18 @@ class LabyrinthBounds(Entity):
             userData=Mechanics.WALL_TAG
         )
 
-    def draw(self):
-        self.draw_lines([0, 0, 0, 255])
 
+class Labyrinth(PrimitiveEntity):
+    '''
+    Game entity for the actual labyrinth walls
+    '''
+    def __init__(self):
+        super().__init__(PrimitiveEntity.PRIMITIVE_LINES, color=(0, 0, 0, 255))
 
-class Labyrinth(Entity):
-    def init_phys(self, world):
-        [x0, y0, x1, y1] = Mechanics.getBounds()
+    def init_physics(self, world):
+        [x0, y0, x1, y1] = Mechanics.BOUNDS
 
-        self._body = world.CreateStaticBody(
+        self.physics_body = world.CreateStaticBody(
             position=(0, 0),
             shapes=[
                 # simple demo one
@@ -181,45 +259,46 @@ class Labyrinth(Entity):
             userData=Mechanics.WALL_TAG
         )
 
-    def draw(self):
-        self.draw_lines([0, 0, 0, 255])
-
 
 class Bot(SpriteEntity):
+    '''
+    Game entity for the bot that the AI has to control
+    '''
     __SIZE = 1
 
     def __init__(self, position):
-        super().__init__(self.__SIZE * Mechanics.PX_PER_METER * 2, (255, 0, 0, 255))
+        super().__init__(self.__SIZE * Mechanics.PX_PER_METER * 2, color=(255, 0, 0, 255))
         self.__initial_pos = position
 
-    def init_phys(self, world):
-        self._body = world.CreateDynamicBody(
+    def init_physics(self, world):
+        self.physics_body = world.CreateDynamicBody(
             position=self.__initial_pos,
             userData=Mechanics.ENDGAME_TAG
         )
-        self._body.CreateCircleFixture(radius=self.__SIZE, density=1, friction=0.3)
+        self.physics_body.CreateCircleFixture(radius=self.__SIZE, density=1, friction=0.3)
 
 
-class LandingZone(Entity):
+class LandingZone(PrimitiveEntity):
     '''
-    The target object where the bot needs to arrive
+    Game entity for the target object where the bot needs to arrive
     '''
     def __init__(self, position):
-        super().__init__()
+        super().__init__(PrimitiveEntity.PRIMITIVE_POLY, color=(0, 255, 0, 100))
         self.__initial_pos = position
 
-    def init_phys(self, world):
-        self._body = world.CreateStaticBody(
+    def init_physics(self, world):
+        self.physics_body = world.CreateStaticBody(
             position=self.__initial_pos,
             shapes=b2.polygonShape(box=(2, 2)),
             userData=Mechanics.ENDGAME_TAG
         )
 
-    def draw(self):
-        self.draw_poly([0, 255, 0, 100])
-
 
 class RaycastInterceptor(b2.rayCastCallback):
+    '''
+    Raycast callback used in the laser targetting. Returns the userData of the intersected
+    fixture body, which results in walls or targets
+    '''
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.__type = None
@@ -228,7 +307,7 @@ class RaycastInterceptor(b2.rayCastCallback):
     def ReportFixture(self, fixture, point, normal, fraction):
         self.__type = fixture.body.userData
         self.__point = point
-        # stop at closest point
+        # stop at closest point, docs say to return fraction
         return fraction
 
     @property
@@ -243,44 +322,61 @@ class RaycastInterceptor(b2.rayCastCallback):
 class Mechanics:
     '''
     Game mechanics object
-    Deals with physics
+    Deals with physics, the laser raycasts and endgame condition
     '''
+    PHYS_WIDTH = 30.0
+    PHYS_HEIGHT = 30.0
     PX_PER_METER = 20.0
+
     ENDGAME_TAG = 'endgame'
     WALL_TAG = 'wall'
-    TARGET_TAG = 'target'
+
+    BOUNDS = (0.5, 0.5, PHYS_WIDTH - 0.5, PHYS_HEIGHT - 0.5)
+
+    BOT_POSITION = (8, 25)
+    LANDING_POSITION = (BOUNDS[2]/2 + 6, BOUNDS[3] - 2)
 
     def __init__(self):
-        # todo: contact listener for end game
         self.__world = b2.world(gravity=(0, 0), doSleep=True)
-        self.__hitmap = None
+        self.__entities = []
 
+        self.hitmap = None
         self.target_reached = EventOnce()
 
     def add_entity(self, entity):
-        # init mechanics for given entity
-        self.__init_entity(entity)
+        entity.init_physics(self.__world)
+        self.__entities.append(entity)
 
     def update(self, dt):
         self.__world.Step(1.0 / 60, 10, 10)
+
+        # update all entities
+        for e in self.__entities:
+            e.update()
 
         # check contacts for endgame
         for c in self.__world.contacts:
             d1 = c.fixtureA.body.userData
             d2 = c.fixtureB.body.userData
-            if d1 == d2:
+            # both the bot and the target have this userData tag, so if they're equal
+            # this means they've collided and game is done
+            if d1 == d2 and d1 == Mechanics.ENDGAME_TAG:
                 self.target_reached()
                 break
 
     def raycast(self, src, dst):
+        '''
+        Does a raycast from src to dst points in 2d space.
+        Returns: (object_type, distance_to_object)
+        '''
         ri = RaycastInterceptor()
         self.__world.RayCast(ri, src, dst)
 
         # draw on hitmap
-        if self.__hitmap is not None:
+        if self.hitmap is not None:
             x = ri.point[0] * Mechanics.PX_PER_METER
             y = ri.point[1] * Mechanics.PX_PER_METER
-            self.__hitmap.draw_hit(x, y)
+            self.hitmap.draw_hit(x, y)
 
         # TODO:
         # vert_buf = [float(x) for x in [src[0], src[1], ri.point[0], ri.point[1]]]
@@ -292,43 +388,35 @@ class Mechanics:
 
         return ri.type, mag
 
-    def __init_entity(self, entity):
-        if type(entity) == Hitmap:
-            # special case, save it for casts
-            self.__hitmap = entity
-            return
-
-        entity.init_phys(self.__world)
-
-    @staticmethod
-    def getBounds():
-        x0 = 10 / Mechanics.PX_PER_METER
-        y0 = 10 / Mechanics.PX_PER_METER
-        x1 = (Main.WIDTH - 10) / Mechanics.PX_PER_METER
-        y1 = (Main.HEIGHT - 10) / Mechanics.PX_PER_METER
-        return [x0, y0, x1, y1]
-
 
 class Main(ColorLayer):
-    WIDTH = 600
-    HEIGHT = 600
+    '''
+    Main cocos2d drawing surface and scene
+    '''
+    WIDTH = int(Mechanics.PHYS_WIDTH * Mechanics.PX_PER_METER)
+    HEIGHT = int(Mechanics.PHYS_HEIGHT * Mechanics.PX_PER_METER)
 
     def __init__(self):
         super(Main, self).__init__(52, 152, 219, 255)
 
+        # init the mechanics
         self.__mechanics = Mechanics()
         self.__mechanics.target_reached += self.__on_target_reached
+        self.__mechanics.hitmap = self.__add_hitmap()
 
+        # add all the objects
         self.__add_labyrinth()
         self.__add_landing()
-        self.__add_hitmap()
         self.__add_bot()
 
+        # start timer and begin
         self.__start_time = time.time()
         self.schedule(self.__mechanics.update)
 
     def __on_target_reached(self):
-        self.__bot.remove_action(self.__bot.actions[0])
+        # inactivate the bot and wait for exit
+        bot_node = self.__bot.cocos_node
+        bot_node.remove_action(bot_node.actions[0])
 
         total = time.time() - self.__start_time
         print('total time was {} seconds'.format(total))
@@ -339,30 +427,33 @@ class Main(ColorLayer):
         except:
             raise RuntimeError('Cannot load AI module. Inner error: ', traceback.format_exc())
 
-        self.__bot = Bot(position=(8, 25))
+        self.__bot = Bot(Mechanics.BOT_POSITION)
         action = MoveAction(mod.Bot(), self.__mechanics)
-        self.__bot.do(action)
+        self.__bot.cocos_node.do(action)
         self.add(self.__bot)
 
     def __add_hitmap(self):
-        self.__hitmap = Hitmap(self.WIDTH, self.HEIGHT)
-        self.add(self.__hitmap, z=1)
+        hitmap = Hitmap(self.WIDTH, self.HEIGHT)
+        super().add(hitmap.cocos_node, z=1)
+        return hitmap
 
     def __add_labyrinth(self):
         self.add(LabyrinthBounds())
         self.add(Labyrinth())
 
     def __add_landing(self):
-        [x0, y0, x1, y1] = Mechanics.getBounds()
-        self.add(LandingZone(position=(x1/2 + 6, y1 - 2)))
+        self.add(LandingZone(Mechanics.LANDING_POSITION))
 
     def add(self, obj, *args, **kwargs):
         ''' Override add() that adds physical objects as well '''
-        super(Main, self).add(obj, *args, **kwargs)
+        super(Main, self).add(obj.cocos_node, *args, **kwargs)
         self.__mechanics.add_entity(obj)
 
 
 class MoveAction(act.Move):
+    '''
+    The cocos2d node move action that interfaces with the AI
+    '''
     def __init__(self, ai, mechanics):
         super().__init__()
         self.__ai = ai
@@ -377,14 +468,15 @@ class MoveAction(act.Move):
             dx, dy = 0, 0
 
         # act on the body with the input, linear motion
-        b = self.target._body
-        dx -= b.linearVelocity[0]
-        dy -= b.linearVelocity[1]
-        b.ApplyLinearImpulse(b2Vec2(dx, dy) * b.mass, b.worldCenter, wake=True)
+        body = self.target.owner.physics_body
+        dx -= body.linearVelocity[0]
+        dy -= body.linearVelocity[1]
+        body.ApplyLinearImpulse(b2Vec2(dx, dy) * body.mass, body.worldCenter, wake=True)
 
     def __raycast(self, dx, dy):
-        px = self.target._body.position.x
-        py = self.target._body.position.y
+        entity = self.target.owner
+        px = entity.physics_body.position.x
+        py = entity.physics_body.position.y
 
         # make a distant point
         magi = 1.0 / ((dx*dx + dy*dy) ** 0.5)
@@ -407,7 +499,7 @@ class BotAI:
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
-        print('Invalid num of args; syntax <program> <ai module name>')
+        print('Invalid num of args; syntax is: python {} <ai module name>'.format(sys.argv[0]))
         exit(1)
 
     director.init(width=Main.WIDTH, height=Main.HEIGHT, autoscale=True, resizable=True)
